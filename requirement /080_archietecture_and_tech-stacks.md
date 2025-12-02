@@ -86,8 +86,7 @@
 | 認証      | JWT（HS256）                                            |
 | DB接続    | boto3（DynamoDB SDK）                                   |
 
-※あなたの性質（Python慣れ＋AI処理を将来入れたい）から、
-**FastAPIを推奨**しておく。
+
 
 ### 8.3.2 API方式
 
