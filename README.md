@@ -1,4 +1,4 @@
-# trade_alert
+# multi_alert
 
 ## 1. プロダクト概要
 
