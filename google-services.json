@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "186531272456",
+    "project_id": "edge-of-light-alert",
+    "storage_bucket": "edge-of-light-alert.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:186531272456:android:a0a47fb2b09d38b5cdbebd",
+        "android_client_info": {
+          "package_name": "com.sh0g0.mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD20P4gQ3kDPoAMmC_C44p-o44_-solyTo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
