@@ -29,68 +29,94 @@ import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
 
 // ==== 通知ハンドラ（既存方針を尊重しつつ、シンプルに） ====
-Notifications.setNotificationHandler({ handleNotification: async () => { return { shouldShowAlert: true, shouldPlaySound: false, shouldSetBadge: false, } as Notifications.NotificationBehavior; }, });
+Notifications.setNotificationHandler({
+  handleNotification: async () => {
+    return {
+      shouldShowAlert: true,
+      shouldPlaySound: false,
+      shouldSetBadge: false,
+    } as Notifications.NotificationBehavior;
+  },
+});
 
-
-
-
-
-async function registerForPushNotificationsAsync(): Promise<string | null> {
-  if (!Device.isDevice) {
-    console.log("Must use physical device for Push Notifications");
-    return null;
-  }
-
-  // Android 通知チャネル
-  if (Platform.OS === "android") {
-    await Notifications.setNotificationChannelAsync("default", {
-      name: "default",
-      importance: Notifications.AndroidImportance.MAX,
-    });
-  }
-
-  // 権限
-  const { status: existingStatus } = await Notifications.getPermissionsAsync();
-  let finalStatus = existingStatus;
-  if (existingStatus !== "granted") {
-    const { status } = await Notifications.requestPermissionsAsync();
-    finalStatus = status;
-  }
-  if (finalStatus !== "granted") {
-    console.warn("Failed to get push token permissions!");
-    return null;
-  }
-
-  // ★ここが ExpoPushToken ではなく FCM デバイストークンになっているポイント
-  const tokenResult = await Notifications.getDevicePushTokenAsync();
-  const token = (tokenResult as any)?.data;
-  console.log("🔥 FCM Device Push Token:", token);
-
-  if (!token || typeof token !== "string") {
-    console.warn("FCM token is not available or invalid:", tokenResult);
-    return null;
-  }
-
-  // バックエンドへ登録
+/**
+ * 目的：ログが見えない状況でも原因を確定できるように、
+ * 成功/失敗理由を文字列で返す（UIに表示する）。
+ *
+ * ※トークン全体は漏洩リスクがあるので、UI表示は先頭だけ。
+ */
+async function registerForPushNotificationsAsync(): Promise<string> {
   try {
-    await registerPushToken(token);
-    console.log("Push token registered on backend.");
-  } catch (e) {
-    console.error("Failed to register push token:", e);
-  }
+    if (!Device.isDevice) {
+      return "NG: Device.isDevice is false（実機として認識されていない）";
+    }
 
-  return token;
+    // Android 通知チャネル
+    if (Platform.OS === "android") {
+      await Notifications.setNotificationChannelAsync("default", {
+        name: "default",
+        importance: Notifications.AndroidImportance.MAX,
+      });
+    }
+
+    // 権限
+    const perm = await Notifications.getPermissionsAsync();
+    let finalStatus = perm.status;
+
+    if (finalStatus !== "granted") {
+      const req = await Notifications.requestPermissionsAsync();
+      finalStatus = req.status;
+    }
+
+    if (finalStatus !== "granted") {
+      return `NG: notification permission = ${finalStatus}`;
+    }
+
+    // ★ここが ExpoPushToken ではなく FCM デバイストークンになっているポイント
+    const tokenResult = await Notifications.getDevicePushTokenAsync();
+    const token = (tokenResult as any)?.data;
+
+    if (!token || typeof token !== "string") {
+      return `NG: FCM token invalid. tokenResult=${JSON.stringify(tokenResult)}`;
+    }
+
+    // バックエンドへ登録
+    try {
+      await registerPushToken(token);
+    } catch (e: any) {
+      return `NG: registerPushToken failed: ${String(e?.message ?? e)}`;
+    }
+
+    // tokenは先頭だけ表示
+    return `OK: token acquired & registered. token(head)=${token.slice(0, 12)}...`;
+  } catch (e: any) {
+    return `NG: exception: ${String(e?.message ?? e)}`;
+  }
 }
 
 const HomeScreen: React.FC = () => {
-
   const [isLoading, setIsLoading] = useState(true);
   const [health, setHealth] = useState<string | null>(null);
   const [alerts, setAlerts] = useState<AlertType[]>([]);
 
+  // ★追加：push の状態をUIに出す
+  const [pushDebug, setPushDebug] = useState<string>(
+    "(push debug: not started)"
+  );
+
   const [newSymbol, setNewSymbol] = useState("");
   const [newCondition, setNewCondition] = useState<"above" | "below">("above");
+
+  // ★追加：アラート種別
+  const [newAlertType, setNewAlertType] = useState<"absolute" | "percent">(
+    "absolute"
+  );
+
+  // absolute用（価格）
   const [newThreshold, setNewThreshold] = useState("");
+
+  // percent用（%）
+  const [newPercentThreshold, setNewPercentThreshold] = useState("");
 
   // ==== 初期ロード & フォーカス時のリロード ====
   const loadData = useCallback(async () => {
@@ -118,42 +144,72 @@ const HomeScreen: React.FC = () => {
   // ==== FCM token 登録 ====
   useEffect(() => {
     (async () => {
-      try {
-        await registerForPushNotificationsAsync();
-      } catch (e) {
-        console.error("Error during push registration:", e);
-      }
+      const msg = await registerForPushNotificationsAsync();
+      setPushDebug(msg);
     })();
   }, []);
 
   // ==== Alert 操作 ====
   const handleCreateAlert = useCallback(async () => {
-    if (!newSymbol || !newThreshold) {
-      RNAlert.alert("入力エラー", "銘柄と価格を入力してください。");
-      return;
-    }
-
-    const threshold = Number(newThreshold);
-    if (Number.isNaN(threshold)) {
-      RNAlert.alert("入力エラー", "価格は数値で入力してください。");
+    if (!newSymbol) {
+      RNAlert.alert("入力エラー", "銘柄を入力してください。");
       return;
     }
 
     try {
+      if (newAlertType === "absolute") {
+        if (!newThreshold) {
+          RNAlert.alert("入力エラー", "閾値価格を入力してください。");
+          return;
+        }
+        const threshold = Number(newThreshold);
+        if (Number.isNaN(threshold)) {
+          RNAlert.alert("入力エラー", "閾値価格は数値で入力してください。");
+          return;
+        }
+
+        const created = await createAlert({
+          symbol: newSymbol,
+          condition: newCondition,
+          alert_type: "absolute",
+          threshold_price: threshold,
+          is_active: true,
+        });
+
+        setAlerts((prev) => [...prev, created]);
+        setNewSymbol("");
+        setNewThreshold("");
+        return;
+      }
+
+      // percent
+      if (!newPercentThreshold) {
+        RNAlert.alert("入力エラー", "閾値(%)を入力してください。");
+        return;
+      }
+      const pct = Number(newPercentThreshold);
+      if (Number.isNaN(pct)) {
+        RNAlert.alert("入力エラー", "閾値(%)は数値で入力してください。");
+        return;
+      }
+
       const created = await createAlert({
         symbol: newSymbol,
         condition: newCondition,
-        threshold_price: threshold,
+        alert_type: "percent",
+        percent_threshold: pct,
+        // base_price は backend 側で自動セットする想定なら送らなくてOK
         is_active: true,
       });
+
       setAlerts((prev) => [...prev, created]);
       setNewSymbol("");
-      setNewThreshold("");
+      setNewPercentThreshold("");
     } catch (e) {
       console.error("Failed to create alert:", e);
       RNAlert.alert("エラー", "アラートの作成に失敗しました。");
     }
-  }, [newSymbol, newThreshold, newCondition]);
+  }, [newSymbol, newCondition, newAlertType, newThreshold, newPercentThreshold]);
 
   const handleDeleteAlert = useCallback(async (id: number) => {
     try {
@@ -165,22 +221,22 @@ const HomeScreen: React.FC = () => {
     }
   }, []);
 
-  const handleToggleActive = useCallback(
-    async (alert: AlertType) => {
-      try {
-        const updated = await updateAlert(alert.id, {
-          is_active: !alert.is_active,
-        });
-        setAlerts((prev) =>
-          prev.map((a) => (a.id === alert.id ? updated : a))
-        );
-      } catch (e) {
-        console.error("Failed to toggle alert:", e);
-        RNAlert.alert("エラー", "アラートの更新に失敗しました。");
-      }
-    },
-    []
-  );
+  // ★重要：ONに戻す時だけ notified=false を送って再通知可能に戻す
+  const handleToggleActive = useCallback(async (alert: AlertType) => {
+    try {
+      const nextIsActive = !alert.is_active;
+
+      const payload = nextIsActive
+        ? { is_active: true, notified: false } // ONにする時だけ通知済みを解除
+        : { is_active: false }; // OFFにする時は触らない
+
+      const updated = await updateAlert(alert.id, payload);
+      setAlerts((prev) => prev.map((a) => (a.id === alert.id ? updated : a)));
+    } catch (e) {
+      console.error("Failed to toggle alert:", e);
+      RNAlert.alert("エラー", "アラートの更新に失敗しました。");
+    }
+  }, []);
 
   const handleTestPush = useCallback(async () => {
     try {
@@ -195,12 +251,11 @@ const HomeScreen: React.FC = () => {
   const handleRunAlertCheck = useCallback(async () => {
     try {
       const res = await runAlertCheck();
-      RNAlert.alert(
-        "ジョブ実行",
-        `トリガーされたアラートID: ${(res?.triggered_alerts || []).join(
-          ", "
-        )}`
-      );
+      const ids = (res?.triggered_alerts || [])
+        .map((x: any) => (typeof x === "object" ? x.id : x))
+        .join(", ");
+
+      RNAlert.alert("ジョブ実行", `トリガー: ${ids || "なし"}`);
     } catch (e) {
       console.error("Failed to run alert check:", e);
       RNAlert.alert("エラー", "ジョブ実行に失敗しました。");
@@ -228,6 +283,7 @@ const HomeScreen: React.FC = () => {
       <View style={{ marginBottom: 16 }}>
         <Text style={{ fontSize: 18, fontWeight: "bold" }}>バックエンド状態</Text>
         <Text style={{ marginTop: 4 }}>health: {health}</Text>
+        <Text style={{ marginTop: 8 }}>push: {pushDebug}</Text>
       </View>
 
       {/* Pushテスト＆ジョブテスト */}
@@ -243,6 +299,7 @@ const HomeScreen: React.FC = () => {
         >
           <Text style={{ color: "#fff" }}>テスト通知送信</Text>
         </TouchableOpacity>
+
         <TouchableOpacity
           onPress={handleRunAlertCheck}
           style={{
@@ -260,39 +317,111 @@ const HomeScreen: React.FC = () => {
         <Text style={{ fontSize: 16, fontWeight: "bold", marginBottom: 8 }}>
           新規アラート作成
         </Text>
+
         <TextInput
           placeholder="銘柄 (例: AAPL)"
           value={newSymbol}
           onChangeText={setNewSymbol}
+          placeholderTextColor="#64748B"
           style={{
             borderWidth: 1,
-            borderColor: "#ff0000ff",
+            borderColor: "#38BDF8",
             borderRadius: 4,
             padding: 8,
             marginBottom: 8,
+            backgroundColor: "#1E293B",
+            color: "#E5E7EB",
           }}
         />
-        <TextInput
-          placeholder="閾値価格 (例: 150)"
-          value={newThreshold}
-          onChangeText={setNewThreshold}
-          keyboardType="numeric"
-          style={{
-            borderWidth: 1,
-            borderColor: "#ff0000ff",
-            borderRadius: 4,
-            padding: 8,
-            marginBottom: 8,
-          }}
-        />
+
+        {/* アラート種別 */}
+        <View style={{ flexDirection: "row", marginBottom: 8 }}>
+          <TouchableOpacity
+            onPress={() => setNewAlertType("absolute")}
+            style={{
+              flex: 1,
+              padding: 8,
+              backgroundColor: newAlertType === "absolute" ? "#2196f3" : "#e0e0e0",
+              borderRadius: 4,
+              marginRight: 4,
+            }}
+          >
+            <Text
+              style={{
+                textAlign: "center",
+                color: newAlertType === "absolute" ? "#fff" : "#000",
+              }}
+            >
+              価格（absolute）
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => setNewAlertType("percent")}
+            style={{
+              flex: 1,
+              padding: 8,
+              backgroundColor: newAlertType === "percent" ? "#2196f3" : "#e0e0e0",
+              borderRadius: 4,
+              marginLeft: 4,
+            }}
+          >
+            <Text
+              style={{
+                textAlign: "center",
+                color: newAlertType === "percent" ? "#fff" : "#000",
+              }}
+            >
+              変動率（percent）
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* 閾値入力（種別で切替） */}
+        {newAlertType === "absolute" ? (
+          <TextInput
+            placeholder="閾値価格 (例: 150)"
+            value={newThreshold}
+            onChangeText={setNewThreshold}
+            keyboardType="numeric"
+            placeholderTextColor="#64748B"
+            style={{
+              borderWidth: 1,
+              borderColor: "#38BDF8",
+              borderRadius: 4,
+              padding: 8,
+              marginBottom: 8,
+              backgroundColor: "#1E293B",
+              color: "#E5E7EB",
+            }}
+          />
+        ) : (
+          <TextInput
+            placeholder="閾値(%) (例: 5.0)"
+            value={newPercentThreshold}
+            onChangeText={setNewPercentThreshold}
+            keyboardType="numeric"
+            placeholderTextColor="#64748B"
+            style={{
+              borderWidth: 1,
+              borderColor: "#38BDF8",
+              borderRadius: 4,
+              padding: 8,
+              marginBottom: 8,
+              backgroundColor: "#1E293B",
+              color: "#E5E7EB",
+            }}
+          />
+        )}
+
+        {/* 条件 */}
         <View style={{ flexDirection: "row", marginBottom: 8 }}>
           <TouchableOpacity
             onPress={() => setNewCondition("above")}
             style={{
               flex: 1,
               padding: 8,
-              backgroundColor:
-                newCondition === "above" ? "#2196f3" : "#e0e0e0",
+              backgroundColor: newCondition === "above" ? "#2196f3" : "#e0e0e0",
               borderRadius: 4,
               marginRight: 4,
             }}
@@ -306,13 +435,13 @@ const HomeScreen: React.FC = () => {
               以上で通知
             </Text>
           </TouchableOpacity>
+
           <TouchableOpacity
             onPress={() => setNewCondition("below")}
             style={{
               flex: 1,
               padding: 8,
-              backgroundColor:
-                newCondition === "below" ? "#2196f3" : "#e0e0e0",
+              backgroundColor: newCondition === "below" ? "#2196f3" : "#e0e0e0",
               borderRadius: 4,
               marginLeft: 4,
             }}
@@ -327,6 +456,7 @@ const HomeScreen: React.FC = () => {
             </Text>
           </TouchableOpacity>
         </View>
+
         <TouchableOpacity
           onPress={handleCreateAlert}
           style={{
@@ -344,51 +474,101 @@ const HomeScreen: React.FC = () => {
         <Text style={{ fontSize: 16, fontWeight: "bold", marginBottom: 8 }}>
           登録済みアラート
         </Text>
+
         <FlatList
           data={alerts}
           keyExtractor={(item) => item.id.toString()}
-          renderItem={({ item }) => (
-            <View
-              style={{
-                padding: 8,
-                marginBottom: 8,
-                borderWidth: 1,
-                borderColor: "#ccc",
-                borderRadius: 4,
-              }}
-            >
-              <Text style={{ fontWeight: "bold" }}>
-                {item.symbol} ({item.condition} {item.threshold_price})
-              </Text>
-              <Text>有効: {item.is_active ? "ON" : "OFF"}</Text>
-              <Text>通知済み: {item.notified ? "はい" : "いいえ"}</Text>
-              <View style={{ flexDirection: "row", marginTop: 8 }}>
-                <TouchableOpacity
-                  onPress={() => handleToggleActive(item)}
+          renderItem={({ item }) => {
+            const label =
+              item.alert_type === "percent"
+                ? `${item.condition} ${item.percent_threshold ?? "?"}%`
+                : `${item.condition} ${item.threshold_price ?? "?"}`;
+
+            return (
+              <View
+                style={{
+                  padding: 8,
+                  marginBottom: 8,
+                  borderWidth: 1,
+                  borderColor: "#334155",
+                  borderRadius: 4,
+                  backgroundColor: "#0B1220",
+                }}
+              >
+                {/* 1行目：銘柄＋条件＋通知済みバッジ */}
+                <View
                   style={{
-                    padding: 6,
-                    borderRadius: 4,
-                    backgroundColor: item.is_active ? "#ff9800" : "#4caf50",
-                    marginRight: 8,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    flexWrap: "wrap",
                   }}
                 >
-                  <Text style={{ color: "#fff" }}>
-                    {item.is_active ? "無効化" : "有効化"}
+                  <Text
+                    style={{
+                      fontWeight: "bold",
+                      color: "#E5E7EB",
+                      marginRight: 8,
+                    }}
+                  >
+                    {item.symbol} ({item.alert_type}) / {label}
                   </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => handleDeleteAlert(item.id)}
-                  style={{
-                    padding: 6,
-                    borderRadius: 4,
-                    backgroundColor: "#f44336",
-                  }}
-                >
-                  <Text style={{ color: "#fff" }}>削除</Text>
-                </TouchableOpacity>
+
+                  {item.notified ? (
+                    <View
+                      style={{
+                        paddingHorizontal: 8,
+                        paddingVertical: 2,
+                        borderRadius: 999,
+                        backgroundColor: "#334155",
+                      }}
+                    >
+                      <Text style={{ color: "#E5E7EB", fontSize: 12 }}>
+                        通知済み
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                <Text style={{ color: "#94A3B8", marginTop: 6 }}>
+                  有効: {item.is_active ? "ON" : "OFF"}
+                </Text>
+
+                {/* 仕様説明（notified=true のときだけ） */}
+                {item.notified ? (
+                  <Text style={{ color: "#94A3B8", marginTop: 4, fontSize: 12 }}>
+                    二重通知防止のため、このアラートは再通知されません。再度通知したい場合は一度 OFF にしてから ON にしてください。
+                  </Text>
+                ) : null}
+
+                <View style={{ flexDirection: "row", marginTop: 8 }}>
+                  <TouchableOpacity
+                    onPress={() => handleToggleActive(item)}
+                    style={{
+                      padding: 6,
+                      borderRadius: 4,
+                      backgroundColor: item.is_active ? "#ff9800" : "#4caf50",
+                      marginRight: 8,
+                    }}
+                  >
+                    <Text style={{ color: "#fff" }}>
+                      {item.is_active ? "無効化" : "有効化"}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    onPress={() => handleDeleteAlert(item.id)}
+                    style={{
+                      padding: 6,
+                      borderRadius: 4,
+                      backgroundColor: "#f44336",
+                    }}
+                  >
+                    <Text style={{ color: "#fff" }}>削除</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
-            </View>
-          )}
+            );
+          }}
         />
       </View>
     </SafeAreaView>

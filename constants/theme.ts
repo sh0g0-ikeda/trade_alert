@@ -6,7 +6,7 @@
 import { Platform } from 'react-native';
 
 const tintColorLight = '#0a7ea4';
-const tintColorDark = '#fff';
+const tintColorDark = '#38BDF8'; // 白を避けてアクセントに
 
 export const Colors = {
   light: {
@@ -18,14 +18,15 @@ export const Colors = {
     tabIconSelected: tintColorLight,
   },
   dark: {
-    text: '#ECEDEE',
-    background: '#151718',
-    tint: tintColorDark,
-    icon: '#9BA1A6',
-    tabIconDefault: '#9BA1A6',
+    text: '#E5E7EB',        // 明るいグレー（白ではない）
+    background: '#0F172A',  // 濃紺（黒ではない）
+    tint: tintColorDark,    // #38BDF8
+    icon: '#94A3B8',
+    tabIconDefault: '#94A3B8',
     tabIconSelected: tintColorDark,
   },
 };
+
 
 export const Fonts = Platform.select({
   ios: {
