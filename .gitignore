@@ -40,11 +40,10 @@ app-example
 
 # generated native folders
 /ios
-/android
-
-# Firebase config (contains API keys)
-google-services.json
-**/google-services.json
+/android/*
+!/android/app/
+/android/app/*
+!/android/app/google-services.json
 
 # Keystores
 *.keystore
