@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert as RNAlert,
+  NativeModules,
   Platform,
   SafeAreaView,
   ScrollView,
@@ -11,6 +12,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import Constants from "expo-constants";
 import {
   endConnection,
   finishTransaction,
@@ -45,6 +47,7 @@ export default function PlanDetailsScreen() {
   const [iapError, setIapError] = useState<string | null>(null);
   const [purchaseInProgress, setPurchaseInProgress] = useState(false);
   const [iapProducts, setIapProducts] = useState<any[]>([]);
+  const [iapAvailable, setIapAvailable] = useState(true);
 
   const loadPlan = useCallback(async () => {
     try {
@@ -69,9 +72,33 @@ export default function PlanDetailsScreen() {
     const initIap = async () => {
       try {
         setIapError(null);
-        await initConnection();
+        const hasNativeIap = !!NativeModules.RNIapModule;
+        const isExpoGo = Constants.appOwnership === "expo";
+        if (!hasNativeIap || isExpoGo) {
+          setIapAvailable(false);
+          setIapReady(false);
+          setIapError(
+            "課金は開発ビルド/ストア版でのみ利用できます。",
+          );
+          return;
+        }
+        let connected = false;
+        try {
+          await initConnection();
+          connected = true;
+        } catch (connErr: any) {
+          console.warn("IAP initConnection failed:", connErr);
+          setIapAvailable(false);
+          setIapReady(false);
+          setIapError("Google Play Billingに接続できません。ストアからインストールしてください。");
+          return;
+        }
         if (Platform.OS === "android") {
-          await flushFailedPurchasesCachedAsPendingAndroid();
+          try {
+            await flushFailedPurchasesCachedAsPendingAndroid();
+          } catch (flushErr: any) {
+            console.warn("flushFailedPurchases failed:", flushErr);
+          }
         }
         const subs = await getSubscriptions({ skus: [PREMIUM_PRODUCT_ID] });
         const list = subs ?? [];
@@ -84,6 +111,7 @@ export default function PlanDetailsScreen() {
         }
       } catch (e: any) {
         console.error("IAP init error:", e);
+        setIapAvailable(false);
         setIapError(e?.message ?? "課金の初期化に失敗しました。");
       }
     };
@@ -136,9 +164,11 @@ export default function PlanDetailsScreen() {
     return () => {
       purchaseUpdateSub?.remove();
       purchaseErrorSub?.remove();
-      endConnection();
+      if (iapAvailable) {
+        endConnection();
+      }
     };
-  }, [refreshSubscription]);
+  }, [refreshSubscription, iapAvailable]);
 
   if (isLoading) {
     return (
@@ -191,6 +221,10 @@ export default function PlanDetailsScreen() {
   })();
 
   const handlePurchase = useCallback(async () => {
+    if (!iapAvailable) {
+      RNAlert.alert("エラー", "課金は開発ビルド/ストア版でのみ利用できます。");
+      return;
+    }
     if (!iapReady) {
       RNAlert.alert("エラー", "課金の初期化が完了していません。");
       return;
@@ -389,10 +423,12 @@ export default function PlanDetailsScreen() {
           <View style={{ marginTop: 24 }}>
             <TouchableOpacity
               onPress={handlePurchase}
-              disabled={!iapReady || purchaseInProgress}
+              disabled={!iapAvailable || !iapReady || purchaseInProgress}
               style={{
                 backgroundColor:
-                  !iapReady || purchaseInProgress ? "#94A3B8" : "#38BDF8",
+                  !iapAvailable || !iapReady || purchaseInProgress
+                    ? "#94A3B8"
+                    : "#38BDF8",
                 padding: 16,
                 borderRadius: 8,
                 alignItems: "center",
@@ -400,7 +436,10 @@ export default function PlanDetailsScreen() {
             >
               <Text
                 style={{
-                  color: !iapReady || purchaseInProgress ? "#111827" : "#0B1220",
+                  color:
+                    !iapAvailable || !iapReady || purchaseInProgress
+                      ? "#111827"
+                      : "#0B1220",
                   fontSize: 16,
                   fontWeight: "bold",
                 }}
