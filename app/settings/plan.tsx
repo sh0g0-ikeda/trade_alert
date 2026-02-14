@@ -68,6 +68,7 @@ export default function PlanDetailsScreen() {
   useEffect(() => {
     let purchaseUpdateSub: any;
     let purchaseErrorSub: any;
+    let connected = false;
 
     const initIap = async () => {
       try {
@@ -82,7 +83,6 @@ export default function PlanDetailsScreen() {
           );
           return;
         }
-        let connected = false;
         try {
           await initConnection();
           connected = true;
@@ -90,9 +90,54 @@ export default function PlanDetailsScreen() {
           console.warn("IAP initConnection failed:", connErr);
           setIapAvailable(false);
           setIapReady(false);
-          setIapError("Google Play Billingに接続できません。ストアからインストールしてください。");
+          setIapError("Google Play Billingに接続できません。");
           return;
         }
+
+        // リスナーはinitConnection成功後に登録
+        purchaseUpdateSub = purchaseUpdatedListener(async (purchase) => {
+          try {
+            setPurchaseInProgress(true);
+            const receipt =
+              Platform.OS === "ios"
+                ? purchase.transactionReceipt
+                : purchase.purchaseToken;
+            if (!receipt) {
+              throw new Error("レシート情報が取得できませんでした。");
+            }
+
+            const verifyRes = await verifySubscription({
+              platform: Platform.OS as "ios" | "android",
+              receipt_data: receipt,
+              product_id: purchase.productId ?? PREMIUM_PRODUCT_ID,
+            });
+
+            if (!verifyRes.success || !verifyRes.subscription) {
+              throw new Error(verifyRes.message ?? "サブスクリプションの検証に失敗しました。");
+            }
+
+            setSubscription(verifyRes.subscription);
+            await refreshSubscription();
+            RNAlert.alert("成功", "プレミアムにアップグレードしました。");
+          } catch (e: any) {
+            console.error("Purchase verify error:", e);
+            RNAlert.alert("エラー", e?.message ?? "購入の検証に失敗しました。");
+          } finally {
+            setPurchaseInProgress(false);
+            try {
+              await finishTransaction({ purchase, isConsumable: false });
+            } catch (e) {
+              console.error("finishTransaction error:", e);
+            }
+          }
+        });
+
+        purchaseErrorSub = purchaseErrorListener((error) => {
+          console.error("purchase error:", error);
+          setPurchaseInProgress(false);
+          setIapError(error?.message ?? "購入に失敗しました。");
+        });
+
         if (Platform.OS === "android") {
           try {
             await flushFailedPurchasesCachedAsPendingAndroid();
@@ -118,57 +163,14 @@ export default function PlanDetailsScreen() {
 
     initIap();
 
-    purchaseUpdateSub = purchaseUpdatedListener(async (purchase) => {
-      try {
-        setPurchaseInProgress(true);
-        const receipt =
-          Platform.OS === "ios"
-            ? purchase.transactionReceipt
-            : purchase.purchaseToken;
-        if (!receipt) {
-          throw new Error("レシート情報が取得できませんでした。");
-        }
-
-        const verifyRes = await verifySubscription({
-          platform: Platform.OS as "ios" | "android",
-          receipt_data: receipt,
-          product_id: purchase.productId ?? PREMIUM_PRODUCT_ID,
-        });
-
-        if (!verifyRes.success || !verifyRes.subscription) {
-          throw new Error(verifyRes.message ?? "サブスクリプションの検証に失敗しました。");
-        }
-
-        setSubscription(verifyRes.subscription);
-        await refreshSubscription();
-        RNAlert.alert("成功", "プレミアムにアップグレードしました。");
-      } catch (e: any) {
-        console.error("Purchase verify error:", e);
-        RNAlert.alert("エラー", e?.message ?? "購入の検証に失敗しました。");
-      } finally {
-        setPurchaseInProgress(false);
-        try {
-          await finishTransaction({ purchase, isConsumable: false });
-        } catch (e) {
-          console.error("finishTransaction error:", e);
-        }
-      }
-    });
-
-    purchaseErrorSub = purchaseErrorListener((error) => {
-      console.error("purchase error:", error);
-      setPurchaseInProgress(false);
-      setIapError(error?.message ?? "購入に失敗しました。");
-    });
-
     return () => {
       purchaseUpdateSub?.remove();
       purchaseErrorSub?.remove();
-      if (iapAvailable) {
+      if (connected) {
         endConnection();
       }
     };
-  }, [refreshSubscription, iapAvailable]);
+  }, [refreshSubscription]);
 
   if (isLoading) {
     return (
